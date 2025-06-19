@@ -3,6 +3,7 @@ import psycopg2
 import os
 import socket
 import time
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 
@@ -118,16 +119,17 @@ HTML_TEMPLATE = """
 @app.route('/')
 def inicio():
     try:
-        cursor.execute("SELECT nombre, ip FROM pcs;")
+        cursor.execute("SELECT nombre, ip, ultima_actividad FROM pcs;")
         pcs = cursor.fetchall()
+        ahora = datetime.utcnow()
         estados = {}
-        for nombre, ip in pcs:
-            try:
-                socket.create_connection((ip, 5000), timeout=1)
+        resultado = [(nombre, ip) for nombre, ip, _ in pcs]
+        for nombre, ip, ultima in pcs:
+            if ultima and ahora - ultima < timedelta(seconds=15):
                 estados[nombre] = "conectado"
-            except:
+            else:
                 estados[nombre] = "desconectado"
-        return render_template_string(HTML_TEMPLATE, pcs=pcs, estados=estados)
+        return render_template_string(HTML_TEMPLATE, pcs=resultado, estados=estados)
     except Exception as e:
         return f"<h1>Error en el servidor</h1><p>{e}</p>", 500
 
