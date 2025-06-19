@@ -81,12 +81,6 @@ HTML_TEMPLATE = """
       }
     </style>
     <script>
-      async function cargarDatos() {
-        const response = await fetch("/pcs");
-        const data = await response.json();
-        location.reload();
-      }
-
       function solicitarClave(nombre) {
         const clave = prompt("Ingresa la contraseña para eliminar a: " + nombre);
         if (clave !== null) {
@@ -123,21 +117,24 @@ HTML_TEMPLATE = """
 
 @app.route('/')
 def inicio():
-    cursor.execute("SELECT nombre, ip FROM pcs;")
-    pcs = cursor.fetchall()
-    estados = {}
-    for nombre, ip in pcs:
-        try:
-            socket.create_connection((ip, 5000), timeout=0.5)
-            estados[nombre] = "conectado"
-        except:
-            estados[nombre] = "desconectado"
-    return render_template_string(HTML_TEMPLATE, pcs=pcs, estados=estados)
+    try:
+        cursor.execute("SELECT nombre, ip FROM pcs;")
+        pcs = cursor.fetchall()
+        estados = {}
+        for nombre, ip in pcs:
+            try:
+                socket.create_connection((ip, 5000), timeout=1)
+                estados[nombre] = "conectado"
+            except:
+                estados[nombre] = "desconectado"
+        return render_template_string(HTML_TEMPLATE, pcs=pcs, estados=estados)
+    except Exception as e:
+        return f"<h1>Error en el servidor</h1><p>{e}</p>", 500
 
 @app.route('/eliminar/<nombre>', methods=['POST'])
 def eliminar_pc(nombre):
     clave = request.form.get("clave")
-    if clave == "admin123":  # Cambia esta contraseña por una más segura
+    if clave == "admin123":
         cursor.execute("DELETE FROM pcs WHERE nombre = %s;", (nombre,))
         cursor.execute("DELETE FROM comandos WHERE nombre = %s;", (nombre,))
         conn.commit()
@@ -187,14 +184,20 @@ def enviar_comando(nombre, accion):
 
 @app.route('/comando/<nombre>/pendiente', methods=['GET'])
 def obtener_comando_pendiente(nombre):
-    cursor.execute("SELECT accion FROM comandos WHERE nombre = %s;", (nombre,))
-    resultado = cursor.fetchone()
-    if resultado:
-        accion = resultado[0]
-        cursor.execute("DELETE FROM comandos WHERE nombre = %s;", (nombre,))
+    try:
+        cursor.execute("BEGIN;")
+        cursor.execute("SELECT accion FROM comandos WHERE nombre = %s;", (nombre,))
+        resultado = cursor.fetchone()
+        if resultado:
+            accion = resultado[0]
+            cursor.execute("DELETE FROM comandos WHERE nombre = %s;", (nombre,))
+            conn.commit()
+            return jsonify({"accion": accion})
         conn.commit()
-        return jsonify({"accion": accion})
-    return jsonify({"accion": None})
+        return jsonify({"accion": None})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
     app.run(debug=True)
