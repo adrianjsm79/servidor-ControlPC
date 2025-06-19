@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify, render_template_string
 import psycopg2
 import os
+import socket
 
 app = Flask(__name__)
 
@@ -30,6 +31,72 @@ HTML_TEMPLATE = """
   <head>
     <meta charset="utf-8">
     <title>ControlPC</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        margin: 20px;
+        background-color: #f4f4f4;
+        color: #333;
+      }
+      h1, h2 {
+        color: #222;
+      }
+      ul {
+        list-style: none;
+        padding: 0;
+      }
+      li {
+        background: #fff;
+        margin: 10px 0;
+        padding: 10px;
+        border: 1px solid #ccc;
+        border-radius: 6px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      .estado {
+        font-size: 0.9em;
+        padding: 2px 6px;
+        border-radius: 4px;
+        background-color: #ccc;
+        color: #fff;
+        margin-right: 10px;
+      }
+      .conectado {
+        background-color: #2ecc71;
+      }
+      .desconectado {
+        background-color: #e67e22;
+      }
+      button {
+        background-color: #e74c3c;
+        color: white;
+        border: none;
+        padding: 5px 10px;
+        border-radius: 4px;
+        cursor: pointer;
+      }
+    </style>
+    <script>
+      function solicitarClave(nombre) {
+        const clave = prompt("Ingresa la contraseña para eliminar a: " + nombre);
+        if (clave !== null) {
+          const form = document.createElement('form');
+          form.method = 'POST';
+          form.action = `/eliminar/${nombre}`;
+
+          const input = document.createElement('input');
+          input.type = 'hidden';
+          input.name = 'clave';
+          input.value = clave;
+
+          form.appendChild(input);
+          document.body.appendChild(form);
+          form.submit();
+        }
+      }
+    </script>
   </head>
   <body>
     <h1>Servidor de ControlPC activo</h1>
@@ -37,11 +104,8 @@ HTML_TEMPLATE = """
     <ul>
       {% for nombre, ip in pcs %}
         <li>
-          {{ nombre }} - {{ ip }}
-          <form method="POST" action="/eliminar/{{ nombre }}" style="display:inline;">
-            <input type="password" name="clave" placeholder="Contraseña" required>
-            <button type="submit">Eliminar</button>
-          </form>
+          <span><span class="estado {{ estados[nombre] }}">{{ estados[nombre] }}</span>{{ nombre }} - {{ ip }}</span>
+          <button onclick="solicitarClave('{{ nombre }}')">Eliminar</button>
         </li>
       {% endfor %}
     </ul>
@@ -53,7 +117,14 @@ HTML_TEMPLATE = """
 def inicio():
     cursor.execute("SELECT nombre, ip FROM pcs;")
     pcs = cursor.fetchall()
-    return render_template_string(HTML_TEMPLATE, pcs=pcs)
+    estados = {}
+    for nombre, ip in pcs:
+        try:
+            socket.create_connection((ip, 5000), timeout=0.5)
+            estados[nombre] = "conectado"
+        except:
+            estados[nombre] = "desconectado"
+    return render_template_string(HTML_TEMPLATE, pcs=pcs, estados=estados)
 
 @app.route('/eliminar/<nombre>', methods=['POST'])
 def eliminar_pc(nombre):
