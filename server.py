@@ -37,9 +37,9 @@ conn.commit()
 # === Plantilla HTML con recarga y estados de PCs ===
 HTML_TEMPLATE = """
 <!doctype html>
-<html lang="es">
+<html lang=\"es\">
   <head>
-    <meta charset="utf-8">
+    <meta charset=\"utf-8\">
     <title>ControlPC</title>
     <style>
       body {
@@ -87,29 +87,57 @@ HTML_TEMPLATE = """
         border-radius: 4px;
         cursor: pointer;
       }
+      #modal {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.5);
+        display: none;
+        justify-content: center;
+        align-items: center;
+      }
+      #modal-content {
+        background: white;
+        padding: 20px;
+        border-radius: 8px;
+        text-align: center;
+      }
+      input[type='password'] {
+        padding: 5px;
+        border-radius: 4px;
+        border: 1px solid #ccc;
+        margin-top: 10px;
+      }
     </style>
     <script>
-      function solicitarClave(nombre, estado) {
-        if (estado === "conectado") {
-          alert("No se puede eliminar un equipo que esté conectado.");
-          return;
-        }
+      let pcParaEliminar = "";
+      function solicitarClave(nombre) {
+        pcParaEliminar = nombre;
+        document.getElementById('modal').style.display = 'flex';
+      }
 
-        const clave = prompt("Ingresa la contraseña para eliminar a: " + nombre);
-        if (clave !== null) {
-          const form = document.createElement('form');
-          form.method = 'POST';
-          form.action = `/eliminar/${nombre}`;
+      function enviarFormulario() {
+        const clave = document.getElementById("clave").value;
+        if (!clave) return;
+        const form = document.createElement('form');
+        form.method = 'POST';
+        form.action = `/eliminar/${pcParaEliminar}`;
 
-          const input = document.createElement('input');
-          input.type = 'hidden';
-          input.name = 'clave';
-          input.value = clave;
+        const input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = 'clave';
+        input.value = clave;
 
-          form.appendChild(input);
-          document.body.appendChild(form);
-          form.submit();
-        }
+        form.appendChild(input);
+        document.body.appendChild(form);
+        form.submit();
+      }
+
+      function cerrarModal() {
+        document.getElementById('modal').style.display = 'none';
+        document.getElementById("clave").value = "";
       }
 
       // Recarga la página cada 10 segundos
@@ -123,10 +151,20 @@ HTML_TEMPLATE = """
       {% for nombre, ip in pcs %}
         <li>
           <span><span class="estado {{ estados[nombre] }}">{{ estados[nombre] }}</span>{{ nombre }} - {{ ip }}</span>
-          <button onclick="solicitarClave('{{ nombre }}', '{{ estados[nombre] }}')">Eliminar</button>
+          <button onclick="solicitarClave('{{ nombre }}')">Eliminar</button>
         </li>
       {% endfor %}
     </ul>
+
+    <div id="modal">
+      <div id="modal-content">
+        <p>Ingresa la contraseña para eliminar <strong><span id="nombre-pc"></span></strong>:</p>
+        <input type="password" id="clave" placeholder="Contraseña" />
+        <br><br>
+        <button onclick="enviarFormulario()">Confirmar</button>
+        <button onclick="cerrarModal()">Cancelar</button>
+      </div>
+    </div>
   </body>
 </html>
 """
@@ -141,7 +179,6 @@ def inicio():
 
         resultado = [(nombre, ip) for nombre, ip, _ in pcs]
 
-        # === Determinar el estado de cada PC ===
         for nombre, ip, ultima in pcs:
             if ultima and ahora - ultima < timedelta(seconds=15):
                 estados[nombre] = "conectado"
@@ -157,23 +194,24 @@ def inicio():
 @app.route('/eliminar/<nombre>', methods=['POST'])
 def eliminar_pc(nombre):
     clave = request.form.get("clave")
-    if clave == "admin123":
-        try:
-            cursor.execute("SELECT ultima_actividad FROM pcs WHERE nombre = %s;", (nombre,))
-            resultado = cursor.fetchone()
-            ahora = datetime.utcnow()
-            if resultado and resultado[0] and ahora - resultado[0] < timedelta(seconds=15):
+    try:
+        cursor.execute("SELECT ultima_actividad FROM pcs WHERE nombre = %s;", (nombre,))
+        resultado = cursor.fetchone()
+        if resultado:
+            ultima = resultado[0]
+            if ultima and datetime.utcnow() - ultima < timedelta(seconds=15):
                 return "No se puede eliminar una PC conectada. <a href='/'>Volver</a>", 403
 
+        if clave == "admin123":
             cursor.execute("DELETE FROM pcs WHERE nombre = %s;", (nombre,))
             cursor.execute("DELETE FROM comandos WHERE nombre = %s;", (nombre,))
             conn.commit()
             return f"PC '{nombre}' eliminada. <a href='/'>Volver</a>"
-        except Exception as e:
-            conn.rollback()
-            return f"Error al eliminar: {e} <a href='/'>Volver</a>", 500
-    else:
-        return "Contraseña incorrecta. <a href='/'>Volver</a>", 403
+        else:
+            return "Contraseña incorrecta. <a href='/'>Volver</a>", 403
+    except Exception as e:
+        conn.rollback()
+        return f"Error al eliminar: {e} <a href='/'>Volver</a>", 500
 
 @app.route('/registrar', methods=['POST'])
 def registrar_pc():
