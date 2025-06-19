@@ -10,7 +10,14 @@ app = Flask(__name__)
 # === Conexión a la base de datos ===
 DATABASE_URL = os.getenv("DATABASE_URL")
 conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+# === Configuración del cursor ===
 cursor = conn.cursor()
+
+try:
+    cursor.execute("ALTER TABLE pcs ADD COLUMN ultima_actividad TIMESTAMP DEFAULT NOW();")
+    conn.commit()
+except psycopg2.errors.DuplicateColumn:
+    conn.rollback()  # ya existía, ignoramos
 
 # === Crear tablas si no existen ===
 cursor.execute("""
