@@ -10,14 +10,14 @@ app = Flask(__name__)
 # === Conexión a la base de datos ===
 DATABASE_URL = os.getenv("DATABASE_URL")
 conn = psycopg2.connect(DATABASE_URL, sslmode='require')
-# === Configuración del cursor ===
 cursor = conn.cursor()
 
+# === Intentar agregar columna si no existe ===
 try:
     cursor.execute("ALTER TABLE pcs ADD COLUMN ultima_actividad TIMESTAMP DEFAULT NOW();")
     conn.commit()
 except psycopg2.errors.DuplicateColumn:
-    conn.rollback()  # ya existía, ignoramos
+    conn.rollback()  # Ya existe la columna, ignoramos
 
 # === Crear tablas si no existen ===
 cursor.execute("""
@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS comandos (
 """)
 conn.commit()
 
-# === Página principal con listado de PCs y opción de eliminación ===
+# === Plantilla HTML con recarga y estados de PCs ===
 HTML_TEMPLATE = """
 <!doctype html>
 <html lang="es">
@@ -106,9 +106,12 @@ HTML_TEMPLATE = """
           form.submit();
         }
       }
+
+      // Recarga la página cada 10 segundos
+      setInterval(() => location.reload(), 10000);
     </script>
   </head>
-  <body onload="setTimeout(() => location.reload(), 10000)">
+  <body>
     <h1>Servidor de ControlPC activo</h1>
     <h2>Equipos registrados</h2>
     <ul>
@@ -126,16 +129,23 @@ HTML_TEMPLATE = """
 @app.route('/')
 def inicio():
     try:
+        # Obtener la lista de PCs registradas
         cursor.execute("SELECT nombre, ip, ultima_actividad FROM pcs;")
         pcs = cursor.fetchall()
         ahora = datetime.utcnow()
         estados = {}
+
+        # Separar los datos en dos listas: uno para la vista y uno para estados
         resultado = [(nombre, ip) for nombre, ip, _ in pcs]
+
+        # === Determinar el estado de cada PC ===
         for nombre, ip, ultima in pcs:
             if ultima and ahora - ultima < timedelta(seconds=15):
                 estados[nombre] = "conectado"
             else:
                 estados[nombre] = "desconectado"
+
+        conn.commit()
         return render_template_string(HTML_TEMPLATE, pcs=resultado, estados=estados)
     except Exception as e:
         conn.rollback()
