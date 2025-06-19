@@ -129,7 +129,6 @@ def inicio():
                 estados[nombre] = "conectado"
             else:
                 estados[nombre] = "desconectado"
-        conn.commit()
         return render_template_string(HTML_TEMPLATE, pcs=resultado, estados=estados)
     except Exception as e:
         conn.rollback()
