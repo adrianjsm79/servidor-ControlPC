@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template_string
 import psycopg2
 import os
 
@@ -22,6 +22,49 @@ CREATE TABLE IF NOT EXISTS comandos (
 );
 """)
 conn.commit()
+
+# === Página principal con listado de PCs y opción de eliminación ===
+HTML_TEMPLATE = """
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <title>ControlPC</title>
+  </head>
+  <body>
+    <h1>Servidor de ControlPC activo</h1>
+    <h2>Equipos registrados</h2>
+    <ul>
+      {% for nombre, ip in pcs %}
+        <li>
+          {{ nombre }} - {{ ip }}
+          <form method="POST" action="/eliminar/{{ nombre }}" style="display:inline;">
+            <input type="password" name="clave" placeholder="Contraseña" required>
+            <button type="submit">Eliminar</button>
+          </form>
+        </li>
+      {% endfor %}
+    </ul>
+  </body>
+</html>
+"""
+
+@app.route('/')
+def inicio():
+    cursor.execute("SELECT nombre, ip FROM pcs;")
+    pcs = cursor.fetchall()
+    return render_template_string(HTML_TEMPLATE, pcs=pcs)
+
+@app.route('/eliminar/<nombre>', methods=['POST'])
+def eliminar_pc(nombre):
+    clave = request.form.get("clave")
+    if clave == "admin123":  # Cambia esta contraseña por una más segura
+        cursor.execute("DELETE FROM pcs WHERE nombre = %s;", (nombre,))
+        cursor.execute("DELETE FROM comandos WHERE nombre = %s;", (nombre,))
+        conn.commit()
+        return f"PC '{nombre}' eliminada. <a href='/'>Volver</a>"
+    else:
+        return "Contraseña incorrecta. <a href='/'>Volver</a>", 403
 
 @app.route('/registrar', methods=['POST'])
 def registrar_pc():
@@ -73,10 +116,6 @@ def obtener_comando_pendiente(nombre):
         conn.commit()
         return jsonify({"accion": accion})
     return jsonify({"accion": None})
-
-@app.route('/')
-def inicio():
-    return "Servidor de ControlPC activo", 200
 
 if __name__ == '__main__':
     app.run(debug=True)

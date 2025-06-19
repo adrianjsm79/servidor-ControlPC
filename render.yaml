@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: servidor-controlpc
+    name: ServidorControlpc
     env: python
     plan: free
     buildCommand: ""
