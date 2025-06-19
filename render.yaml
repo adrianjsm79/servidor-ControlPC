@@ -3,5 +3,5 @@ services:
     name: ServidorControlpc
     env: python
     plan: free
-    buildCommand: ""
-    startCommand: "python server.py"
+    buildCommand: "pip install -r requeriments.txt"
+    startCommand: "gunicorn server:app "

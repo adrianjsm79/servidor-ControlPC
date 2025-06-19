@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify, render_template_string
 import psycopg2
 import os
 import socket
+import time
 
 app = Flask(__name__)
 
@@ -14,7 +15,8 @@ cursor = conn.cursor()
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS pcs (
     nombre TEXT PRIMARY KEY,
-    ip TEXT
+    ip TEXT,
+    ultima_actividad TIMESTAMP DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS comandos (
@@ -79,6 +81,12 @@ HTML_TEMPLATE = """
       }
     </style>
     <script>
+      async function cargarDatos() {
+        const response = await fetch("/pcs");
+        const data = await response.json();
+        location.reload();
+      }
+
       function solicitarClave(nombre) {
         const clave = prompt("Ingresa la contraseña para eliminar a: " + nombre);
         if (clave !== null) {
@@ -98,7 +106,7 @@ HTML_TEMPLATE = """
       }
     </script>
   </head>
-  <body>
+  <body onload="setTimeout(() => location.reload(), 10000)">
     <h1>Servidor de ControlPC activo</h1>
     <h2>Equipos registrados</h2>
     <ul>
@@ -144,8 +152,8 @@ def registrar_pc():
     ip = request.remote_addr
     if nombre:
         cursor.execute("""
-        INSERT INTO pcs (nombre, ip) VALUES (%s, %s)
-        ON CONFLICT (nombre) DO UPDATE SET ip = EXCLUDED.ip;
+        INSERT INTO pcs (nombre, ip, ultima_actividad) VALUES (%s, %s, NOW())
+        ON CONFLICT (nombre) DO UPDATE SET ip = EXCLUDED.ip, ultima_actividad = NOW();
         """, (nombre, ip))
         conn.commit()
         return jsonify({"estado": "registrado", "ip": ip}), 200
