@@ -88,42 +88,46 @@ HTML_TEMPLATE = """
         cursor: pointer;
       }
       #modal {
+        display: none;
         position: fixed;
         top: 0;
         left: 0;
         width: 100%;
         height: 100%;
         background: rgba(0, 0, 0, 0.5);
-        display: none;
         justify-content: center;
         align-items: center;
       }
-      #modal-content {
+      #modalContent {
         background: white;
         padding: 20px;
-        border-radius: 8px;
+        border-radius: 6px;
         text-align: center;
       }
-      input[type='password'] {
-        padding: 5px;
-        border-radius: 4px;
-        border: 1px solid #ccc;
+      #modalContent input {
+        padding: 6px;
         margin-top: 10px;
+        margin-bottom: 10px;
+        width: 80%;
       }
     </style>
     <script>
-      let pcParaEliminar = "";
+      let pcSeleccionada = "";
       function solicitarClave(nombre) {
-        pcParaEliminar = nombre;
+        pcSeleccionada = nombre;
         document.getElementById('modal').style.display = 'flex';
+        document.getElementById('claveInput').value = "";
       }
 
-      function enviarFormulario() {
-        const clave = document.getElementById("clave").value;
-        if (!clave) return;
+      function cerrarModal() {
+        document.getElementById('modal').style.display = 'none';
+      }
+
+      function enviarClave() {
+        const clave = document.getElementById('claveInput').value;
         const form = document.createElement('form');
         form.method = 'POST';
-        form.action = `/eliminar/${pcParaEliminar}`;
+        form.action = `/eliminar/${pcSeleccionada}`;
 
         const input = document.createElement('input');
         input.type = 'hidden';
@@ -133,11 +137,6 @@ HTML_TEMPLATE = """
         form.appendChild(input);
         document.body.appendChild(form);
         form.submit();
-      }
-
-      function cerrarModal() {
-        document.getElementById('modal').style.display = 'none';
-        document.getElementById("clave").value = "";
       }
 
       // Recarga la página cada 10 segundos
@@ -150,21 +149,28 @@ HTML_TEMPLATE = """
     <ul>
       {% for nombre, ip in pcs %}
         <li>
-          <span><span class="estado {{ estados[nombre] }}">{{ estados[nombre] }}</span>{{ nombre }} - {{ ip }}</span>
-          <button onclick="solicitarClave('{{ nombre }}')">Eliminar</button>
+          <span><span class=\"estado {{ estados[nombre] }}\">{{ estados[nombre] }}</span>{{ nombre }} - {{ ip }}</span>
+          <button onclick=\"solicitarClave('{{ nombre }}')\">Eliminar</button>
         </li>
       {% endfor %}
     </ul>
 
-    <div id="modal">
-      <div id="modal-content">
-        <p>Ingresa la contraseña para eliminar <strong><span id="nombre-pc"></span></strong>:</p>
-        <input type="password" id="clave" placeholder="Contraseña" />
-        <br><br>
-        <button onclick="enviarFormulario()">Confirmar</button>
-        <button onclick="cerrarModal()">Cancelar</button>
+    <!-- Modal -->
+    <div id=\"modal\" onclick=\"if(event.target === this) cerrarModal()\">
+      <div id=\"modalContent\">
+        <h3>Ingresa la contraseña</h3>
+        <input id=\"claveInput\" type=\"password\" placeholder=\"Contraseña\">
+        <br>
+        <button onclick=\"enviarClave()\">Confirmar</button>
+        <button onclick=\"cerrarModal()\">Cancelar</button>
       </div>
     </div>
+
+    {% if mensaje %}
+    <script>
+      alert("{{ mensaje }}");
+    </script>
+    {% endif %}
   </body>
 </html>
 """
@@ -176,17 +182,14 @@ def inicio():
         pcs = cursor.fetchall()
         ahora = datetime.utcnow()
         estados = {}
-
         resultado = [(nombre, ip) for nombre, ip, _ in pcs]
-
         for nombre, ip, ultima in pcs:
             if ultima and ahora - ultima < timedelta(seconds=15):
                 estados[nombre] = "conectado"
             else:
                 estados[nombre] = "desconectado"
-
         conn.commit()
-        return render_template_string(HTML_TEMPLATE, pcs=resultado, estados=estados)
+        return render_template_string(HTML_TEMPLATE, pcs=resultado, estados=estados, mensaje=request.args.get('mensaje'))
     except Exception as e:
         conn.rollback()
         return f"<h1>Error en el servidor</h1><p>{e}</p>", 500
@@ -194,24 +197,22 @@ def inicio():
 @app.route('/eliminar/<nombre>', methods=['POST'])
 def eliminar_pc(nombre):
     clave = request.form.get("clave")
+    if clave != "admin123":
+        return ("", 302, {"Location": f"/?mensaje=Contrase%C3%B1a%20incorrecta"})
     try:
         cursor.execute("SELECT ultima_actividad FROM pcs WHERE nombre = %s;", (nombre,))
         resultado = cursor.fetchone()
         if resultado:
             ultima = resultado[0]
             if ultima and datetime.utcnow() - ultima < timedelta(seconds=15):
-                return "No se puede eliminar una PC conectada. <a href='/'>Volver</a>", 403
-
-        if clave == "admin123":
-            cursor.execute("DELETE FROM pcs WHERE nombre = %s;", (nombre,))
-            cursor.execute("DELETE FROM comandos WHERE nombre = %s;", (nombre,))
-            conn.commit()
-            return f"PC '{nombre}' eliminada. <a href='/'>Volver</a>"
-        else:
-            return "Contraseña incorrecta. <a href='/'>Volver</a>", 403
+                return ("", 302, {"Location": f"/?mensaje=No%20puedes%20eliminar%20una%20PC%20activa"})
+        cursor.execute("DELETE FROM pcs WHERE nombre = %s;", (nombre,))
+        cursor.execute("DELETE FROM comandos WHERE nombre = %s;", (nombre,))
+        conn.commit()
+        return ("", 302, {"Location": f"/?mensaje=PC%20'{nombre}'%20eliminada%20correctamente"})
     except Exception as e:
         conn.rollback()
-        return f"Error al eliminar: {e} <a href='/'>Volver</a>", 500
+        return ("", 302, {"Location": f"/?mensaje=Error%20al%20eliminar:%20{str(e)}"})
 
 @app.route('/registrar', methods=['POST'])
 def registrar_pc():
@@ -244,19 +245,13 @@ def enviar_comando(nombre, accion):
         resultado = cursor.fetchone()
         if not resultado:
             return jsonify({"error": "PC no registrada"}), 404
-
         ip = resultado[0]
         cursor.execute("""
         INSERT INTO comandos (nombre, accion) VALUES (%s, %s)
         ON CONFLICT (nombre) DO UPDATE SET accion = EXCLUDED.accion;
         """, (nombre, accion))
         conn.commit()
-
-        return jsonify({
-            "ip_destino": ip,
-            "accion": accion,
-            "estado": "pendiente"
-        })
+        return jsonify({"ip_destino": ip, "accion": accion, "estado": "pendiente"})
     except Exception as e:
         conn.rollback()
         return jsonify({"error": str(e)}), 500
