@@ -89,7 +89,12 @@ HTML_TEMPLATE = """
       }
     </style>
     <script>
-      function solicitarClave(nombre) {
+      function solicitarClave(nombre, estado) {
+        if (estado === "conectado") {
+          alert("No se puede eliminar un equipo que esté conectado.");
+          return;
+        }
+
         const clave = prompt("Ingresa la contraseña para eliminar a: " + nombre);
         if (clave !== null) {
           const form = document.createElement('form');
@@ -118,7 +123,7 @@ HTML_TEMPLATE = """
       {% for nombre, ip in pcs %}
         <li>
           <span><span class="estado {{ estados[nombre] }}">{{ estados[nombre] }}</span>{{ nombre }} - {{ ip }}</span>
-          <button onclick="solicitarClave('{{ nombre }}')">Eliminar</button>
+          <button onclick="solicitarClave('{{ nombre }}', '{{ estados[nombre] }}')">Eliminar</button>
         </li>
       {% endfor %}
     </ul>
@@ -129,13 +134,11 @@ HTML_TEMPLATE = """
 @app.route('/')
 def inicio():
     try:
-        # Obtener la lista de PCs registradas
         cursor.execute("SELECT nombre, ip, ultima_actividad FROM pcs;")
         pcs = cursor.fetchall()
         ahora = datetime.utcnow()
         estados = {}
 
-        # Separar los datos en dos listas: uno para la vista y uno para estados
         resultado = [(nombre, ip) for nombre, ip, _ in pcs]
 
         # === Determinar el estado de cada PC ===
@@ -156,6 +159,12 @@ def eliminar_pc(nombre):
     clave = request.form.get("clave")
     if clave == "admin123":
         try:
+            cursor.execute("SELECT ultima_actividad FROM pcs WHERE nombre = %s;", (nombre,))
+            resultado = cursor.fetchone()
+            ahora = datetime.utcnow()
+            if resultado and resultado[0] and ahora - resultado[0] < timedelta(seconds=15):
+                return "No se puede eliminar una PC conectada. <a href='/'>Volver</a>", 403
+
             cursor.execute("DELETE FROM pcs WHERE nombre = %s;", (nombre,))
             cursor.execute("DELETE FROM comandos WHERE nombre = %s;", (nombre,))
             conn.commit()
