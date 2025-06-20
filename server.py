@@ -203,27 +203,23 @@ def registrar_pc():
 
 @app.route('/pcs', methods=['GET'])
 def obtener_pcs():
-    try:
-        cursor.execute("SELECT nombre, ip, ultima_actividad FROM pcs;")
-        pcs = cursor.fetchall()
-        ahora = datetime.utcnow()
-        resultado = []
+    ahora = datetime.utcnow()
+    cursor.execute("SELECT nombre, ip, ultima_actividad FROM pcs;")
+    pcs = cursor.fetchall()
+    
+    resultado = []
+    for nombre, ip, ultima in pcs:
+        estado = "conectado" if ultima and ahora - ultima < timedelta(seconds=15) else "desconectado"
+        resultado.append({
+            "nombre": nombre,
+            "ip": ip,
+            "estado": estado
+        })
 
-        for nombre, ip, ultima in pcs:
-            estado = "conectado" if ultima and ahora - ultima < timedelta(seconds=15) else "desconectado"
-            resultado.append({
-                "nombre": nombre,
-                "ip": ip,
-                "estado": estado
-            })
+    return jsonify(resultado)
 
-        return jsonify(resultado)
-    except Exception as e:
-        conn.rollback()
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route('/comando/<nombre>/<accion>', methods=['GET'])
+        
+@  app.route('/comando/<nombre>/<accion>', methods=['GET'])
 def enviar_comando(nombre, accion):
     try:
         cursor.execute("SELECT ip FROM pcs WHERE nombre = %s;", (nombre,))
