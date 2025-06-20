@@ -150,6 +150,18 @@ def inicio():
         conn.rollback()
         return f"<h1>Error en el servidor</h1><p>{e}</p>", 500
 
+@app.route('/actualizar_actividad/<nombre>', methods=['POST'])
+def actualizar_actividad(nombre):
+    try:
+        cursor.execute("""
+            UPDATE pcs SET ultima_actividad = NOW() WHERE nombre = %s;
+        """, (nombre,))
+        conn.commit()
+        return jsonify({"estado": "actualizado"}), 200
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/eliminar/<nombre>', methods=['POST'])
 def eliminar_pc(nombre):
     clave = request.form.get("clave")
