@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify, render_template_string, redirect, url_for
 import psycopg2
 import os
 import socket
@@ -42,104 +42,64 @@ HTML_TEMPLATE = """
     <meta charset=\"utf-8\">
     <title>ControlPC</title>
     <style>
-      body {
-        font-family: Arial, sans-serif;
-        margin: 20px;
-        background-color: #f4f4f4;
-        color: #333;
-      }
-      h1, h2 {
-        color: #222;
-      }
-      ul {
-        list-style: none;
-        padding: 0;
-      }
-      li {
-        background: #fff;
-        margin: 10px 0;
-        padding: 10px;
-        border: 1px solid #ccc;
-        border-radius: 6px;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-      }
-      .estado {
-        font-size: 0.9em;
-        padding: 2px 6px;
-        border-radius: 4px;
-        background-color: #ccc;
-        color: #fff;
-        margin-right: 10px;
-      }
-      .conectado {
-        background-color: #2ecc71;
-      }
-      .desconectado {
-        background-color: #e67e22;
-      }
-      button {
-        background-color: #e74c3c;
-        color: white;
-        border: none;
-        padding: 5px 10px;
-        border-radius: 4px;
-        cursor: pointer;
-      }
+      body { font-family: Arial, sans-serif; margin: 20px; background-color: #f4f4f4; color: #333; }
+      h1, h2 { color: #222; }
+      ul { list-style: none; padding: 0; }
+      li { background: #fff; margin: 10px 0; padding: 10px; border: 1px solid #ccc; border-radius: 6px; display: flex; justify-content: space-between; align-items: center; }
+      .estado { font-size: 0.9em; padding: 2px 6px; border-radius: 4px; background-color: #ccc; color: #fff; margin-right: 10px; }
+      .conectado { background-color: #2ecc71; }
+      .desconectado { background-color: #e67e22; }
+      button { background-color: #e74c3c; color: white; border: none; padding: 5px 10px; border-radius: 4px; cursor: pointer; }
       #modal {
-        display: none;
-        position: fixed;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
-        background: rgba(0, 0, 0, 0.5);
-        justify-content: center;
-        align-items: center;
+        display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5);
+        justify-content: center; align-items: center;
       }
-      #modalContent {
-        background: white;
-        padding: 20px;
-        border-radius: 6px;
-        text-align: center;
+      #modal-content {
+        background: white; padding: 20px; border-radius: 8px; text-align: center; min-width: 300px;
       }
-      #modalContent input {
-        padding: 6px;
+      #modal input[type='password'] {
+        padding: 5px; margin-top: 10px; width: 100%;
+      }
+      #modal button {
         margin-top: 10px;
-        margin-bottom: 10px;
-        width: 80%;
+      }
+      .mensaje {
+        margin-top: 10px;
+        color: red;
       }
     </style>
     <script>
-      let pcSeleccionada = "";
       function solicitarClave(nombre) {
-        pcSeleccionada = nombre;
+        document.getElementById('nombre_pc').value = nombre;
+        document.getElementById('clave').value = '';
+        document.getElementById('mensaje').innerText = '';
         document.getElementById('modal').style.display = 'flex';
-        document.getElementById('claveInput').value = "";
       }
 
       function cerrarModal() {
         document.getElementById('modal').style.display = 'none';
       }
 
-      function enviarClave() {
-        const clave = document.getElementById('claveInput').value;
-        const form = document.createElement('form');
-        form.method = 'POST';
-        form.action = `/eliminar/${pcSeleccionada}`;
+      async function enviarClave() {
+        const nombre = document.getElementById('nombre_pc').value;
+        const clave = document.getElementById('clave').value;
 
-        const input = document.createElement('input');
-        input.type = 'hidden';
-        input.name = 'clave';
-        input.value = clave;
+        const formData = new FormData();
+        formData.append('clave', clave);
 
-        form.appendChild(input);
-        document.body.appendChild(form);
-        form.submit();
+        const respuesta = await fetch(`/eliminar/${nombre}`, {
+          method: 'POST',
+          body: formData
+        });
+
+        const texto = await respuesta.text();
+        document.getElementById('mensaje').innerHTML = texto;
+
+        if (respuesta.status === 200) {
+          setTimeout(() => location.reload(), 1500);
+        }
       }
 
-      // Recarga la página cada 10 segundos
       setInterval(() => location.reload(), 10000);
     </script>
   </head>
@@ -155,22 +115,16 @@ HTML_TEMPLATE = """
       {% endfor %}
     </ul>
 
-    <!-- Modal -->
-    <div id=\"modal\" onclick=\"if(event.target === this) cerrarModal()\">
-      <div id=\"modalContent\">
-        <h3>Ingresa la contraseña</h3>
-        <input id=\"claveInput\" type=\"password\" placeholder=\"Contraseña\">
-        <br>
+    <div id=\"modal\">
+      <div id=\"modal-content\">
+        <h3>Confirmar eliminación</h3>
+        <input type=\"hidden\" id=\"nombre_pc\">
+        <input type=\"password\" id=\"clave\" placeholder=\"Contraseña\">
+        <div class=\"mensaje\" id=\"mensaje\"></div>
         <button onclick=\"enviarClave()\">Confirmar</button>
         <button onclick=\"cerrarModal()\">Cancelar</button>
       </div>
     </div>
-
-    {% if mensaje %}
-    <script>
-      alert("{{ mensaje }}");
-    </script>
-    {% endif %}
   </body>
 </html>
 """
@@ -183,13 +137,15 @@ def inicio():
         ahora = datetime.utcnow()
         estados = {}
         resultado = [(nombre, ip) for nombre, ip, _ in pcs]
+
         for nombre, ip, ultima in pcs:
             if ultima and ahora - ultima < timedelta(seconds=15):
                 estados[nombre] = "conectado"
             else:
                 estados[nombre] = "desconectado"
+
         conn.commit()
-        return render_template_string(HTML_TEMPLATE, pcs=resultado, estados=estados, mensaje=request.args.get('mensaje'))
+        return render_template_string(HTML_TEMPLATE, pcs=resultado, estados=estados)
     except Exception as e:
         conn.rollback()
         return f"<h1>Error en el servidor</h1><p>{e}</p>", 500
@@ -197,22 +153,23 @@ def inicio():
 @app.route('/eliminar/<nombre>', methods=['POST'])
 def eliminar_pc(nombre):
     clave = request.form.get("clave")
-    if clave != "admin123":
-        return ("", 302, {"Location": f"/?mensaje=Contrase%C3%B1a%20incorrecta"})
-    try:
-        cursor.execute("SELECT ultima_actividad FROM pcs WHERE nombre = %s;", (nombre,))
-        resultado = cursor.fetchone()
-        if resultado:
-            ultima = resultado[0]
-            if ultima and datetime.utcnow() - ultima < timedelta(seconds=15):
-                return ("", 302, {"Location": f"/?mensaje=No%20puedes%20eliminar%20una%20PC%20activa"})
-        cursor.execute("DELETE FROM pcs WHERE nombre = %s;", (nombre,))
-        cursor.execute("DELETE FROM comandos WHERE nombre = %s;", (nombre,))
-        conn.commit()
-        return ("", 302, {"Location": f"/?mensaje=PC%20'{nombre}'%20eliminada%20correctamente"})
-    except Exception as e:
-        conn.rollback()
-        return ("", 302, {"Location": f"/?mensaje=Error%20al%20eliminar:%20{str(e)}"})
+    if clave == "admin123":
+        try:
+            cursor.execute("SELECT ultima_actividad FROM pcs WHERE nombre = %s;", (nombre,))
+            resultado = cursor.fetchone()
+            if resultado:
+                ultima = resultado[0]
+                if ultima and datetime.utcnow() - ultima < timedelta(seconds=15):
+                    return "No se puede eliminar una PC activa."
+            cursor.execute("DELETE FROM pcs WHERE nombre = %s;", (nombre,))
+            cursor.execute("DELETE FROM comandos WHERE nombre = %s;", (nombre,))
+            conn.commit()
+            return "PC eliminada correctamente."
+        except Exception as e:
+            conn.rollback()
+            return f"Error al eliminar: {e}", 500
+    else:
+        return "Contraseña incorrecta."
 
 @app.route('/registrar', methods=['POST'])
 def registrar_pc():
@@ -245,13 +202,19 @@ def enviar_comando(nombre, accion):
         resultado = cursor.fetchone()
         if not resultado:
             return jsonify({"error": "PC no registrada"}), 404
+
         ip = resultado[0]
         cursor.execute("""
         INSERT INTO comandos (nombre, accion) VALUES (%s, %s)
         ON CONFLICT (nombre) DO UPDATE SET accion = EXCLUDED.accion;
         """, (nombre, accion))
         conn.commit()
-        return jsonify({"ip_destino": ip, "accion": accion, "estado": "pendiente"})
+
+        return jsonify({
+            "ip_destino": ip,
+            "accion": accion,
+            "estado": "pendiente"
+        })
     except Exception as e:
         conn.rollback()
         return jsonify({"error": str(e)}), 500
