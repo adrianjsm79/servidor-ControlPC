@@ -1,15 +1,17 @@
 from flask import Flask, request, jsonify, render_template_string, redirect, url_for, send_from_directory
 import psycopg2
+from werkzeug.utils import secure_filename
 import os
 import socket
 import time
 from datetime import datetime, timedelta
 import requests
 
-app = Flask(__name__)
-
-UPLOAD_FOLDER = os.path.join(os.getcwd(), 'archivos_subidos')
+UPLOUPLOAD_FOLDER = "archivos_temporales"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+app = Flask(__name__)
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
 # === Conexión a la base de datos ===
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -263,33 +265,46 @@ def obtener_comando_pendiente(nombre):
 
 
 @app.route('/archivo/<nombre>', methods=['POST'])
-def reenviar_archivo_a_pc(nombre):
+def subir_archivo(nombre):
     archivo = request.files.get('archivo')
     if not archivo:
         return "No se envió ningún archivo", 400
 
     try:
-        # Buscar la IP del nombre de PC en la base de datos
-        cursor.execute("SELECT ip FROM pcs WHERE nombre = %s;", (nombre,))
-        resultado = cursor.fetchone()
+        filename = secure_filename(archivo.filename)
+        ruta = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        archivo.save(ruta)
 
-        if not resultado:
-            return "PC no registrada", 404
+        cursor.execute("""
+            INSERT INTO comandos (nombre, accion) VALUES (%s, %s)
+            ON CONFLICT (nombre) DO UPDATE SET accion = EXCLUDED.accion;
+        """, (nombre, f"descargar::{filename}"))
+        conn.commit()
 
-        ip_destino = resultado[0]
-        url = f"http://{ip_destino}:5000/recibir_archivo"
-
-        # Preparar el archivo para reenviarlo a la PC destino
-        archivo = {'archivo': (archivo.filename, archivo.stream, archivo.mimetype)}
-        respuesta = requests.post(url, files=archivo)
-
-        if respuesta.status_code == 200:
-            return "Archivo reenviado correctamente", 200
-        else:
-            return f"Error al reenviar archivo: {respuesta.text}", 500
-
+        return jsonify({"mensaje": "Archivo subido correctamente"}), 200
     except Exception as e:
-        return f"Error del servidor intermedio: {e}", 500
+        return f"Error al guardar archivo: {e}", 500
+
+@app.route('/descargas/<filename>', methods=['GET'])
+def descargar_archivo(filename):
+    try:
+        return send_from_directory(app.config['UPLOAD_FOLDER'], filename, as_attachment=True)
+    except Exception as e:
+        return f"Error al servir archivo: {e}", 404
+
+@app.route('/comando/<nombre>/pendiente', methods=['GET'])
+def obtener_comando_pendiente(nombre):
+    try:
+        cursor.execute("SELECT accion FROM comandos WHERE nombre = %s;", (nombre,))
+        resultado = cursor.fetchone()
+        if resultado:
+            accion = resultado[0]
+            cursor.execute("DELETE FROM comandos WHERE nombre = %s;", (nombre,))
+            conn.commit()
+            return jsonify({"accion": accion})
+        return jsonify({"accion": None})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == '__main__':
