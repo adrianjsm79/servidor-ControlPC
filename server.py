@@ -261,8 +261,9 @@ def obtener_comando_pendiente(nombre):
         conn.rollback()
         return jsonify({"error": str(e)}), 500
 
+
 @app.route('/archivo/<nombre>', methods=['POST'])
-def enviar_archivo_a_pc(nombre):
+def reenviar_archivo_a_pc(nombre):
     archivo = request.files.get('archivo')
     if not archivo:
         return "No se envió ningún archivo", 400
