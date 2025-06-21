@@ -7,9 +7,8 @@ import time
 from datetime import datetime, timedelta
 import requests
 
-UPLOUPLOAD_FOLDER = "archivos_temporales"
+UPLOAD_FOLDER = "archivos_temporales"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
@@ -257,10 +256,8 @@ def obtener_comando_pendiente(nombre):
             cursor.execute("DELETE FROM comandos WHERE nombre = %s;", (nombre,))
             conn.commit()
             return jsonify({"accion": accion})
-        conn.commit()
         return jsonify({"accion": None})
     except Exception as e:
-        conn.rollback()
         return jsonify({"error": str(e)}), 500
 
 
@@ -283,29 +280,34 @@ def subir_archivo(nombre):
 
         return jsonify({"mensaje": "Archivo subido correctamente"}), 200
     except Exception as e:
+        conn.rollback()  # <-- Agrega rollback aquí
         return f"Error al guardar archivo: {e}", 500
 
 @app.route('/descargas/<filename>', methods=['GET'])
 def descargar_archivo(filename):
     try:
-        return send_from_directory(app.config['UPLOAD_FOLDER'], filename, as_attachment=True)
+        ruta = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+
+        # Verificamos que el archivo existe
+        if not os.path.exists(ruta):
+            return f"Archivo '{filename}' no encontrado", 404
+
+        # Leemos el archivo completo en memoria para poder borrarlo luego
+        with open(ruta, 'rb') as f:
+            contenido = f.read()
+
+        # Eliminamos el archivo después de leerlo
+        os.remove(ruta)
+
+        # Devolvemos el archivo leído manualmente con los headers correctos
+        from flask import Response
+        return Response(
+            contenido,
+            headers={
+                'Content-Disposition': f'attachment; filename={filename}',
+                'Content-Type': 'application/octet-stream'
+            }
+        )
+
     except Exception as e:
-        return f"Error al servir archivo: {e}", 404
-
-@app.route('/comando/<nombre>/pendiente', methods=['GET'])
-def obtener_comando_pendiente(nombre):
-    try:
-        cursor.execute("SELECT accion FROM comandos WHERE nombre = %s;", (nombre,))
-        resultado = cursor.fetchone()
-        if resultado:
-            accion = resultado[0]
-            cursor.execute("DELETE FROM comandos WHERE nombre = %s;", (nombre,))
-            conn.commit()
-            return jsonify({"accion": accion})
-        return jsonify({"accion": None})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-if __name__ == '__main__':
-    app.run(debug=True)
+        return f"Error al servir y eliminar archivo: {e}", 500
