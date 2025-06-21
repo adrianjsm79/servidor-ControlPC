@@ -219,7 +219,7 @@ def obtener_pcs():
     return jsonify(resultado)
 
         
-@  app.route('/comando/<nombre>/<accion>', methods=['GET'])
+@app.route('/comando/<nombre>/<accion>', methods=['GET'])
 def enviar_comando(nombre, accion):
     try:
         cursor.execute("SELECT ip FROM pcs WHERE nombre = %s;", (nombre,))
@@ -258,6 +258,16 @@ def obtener_comando_pendiente(nombre):
     except Exception as e:
         conn.rollback()
         return jsonify({"error": str(e)}), 500
+
+@app.route('/recibir_archivo', methods=['POST'])
+def recibir_archivo():
+    archivo = request.files.get('archivo')
+    if archivo:
+        ruta_destino = os.path.join("C:\\", "CarpetaRecibidos")
+        os.makedirs(ruta_destino, exist_ok=True)  # No lanza error si ya existe
+        archivo.save(os.path.join(ruta_destino, archivo.filename))
+        return "Archivo recibido", 200
+    return "No se envió archivo", 400
 
 if __name__ == '__main__':
     app.run(debug=True)
