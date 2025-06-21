@@ -280,8 +280,8 @@ def reenviar_archivo_a_pc(nombre):
         url = f"http://{ip_destino}:5000/recibir_archivo"
 
         # Preparar el archivo para reenviarlo a la PC destino
-        archivos = {'archivo': (archivo.filename, archivo.stream, archivo.mimetype)}
-        respuesta = requests.post(url, files=archivos)
+        archivo = {'archivo': (archivo.filename, archivo.stream, archivo.mimetype)}
+        respuesta = requests.post(url, files=archivo)
 
         if respuesta.status_code == 200:
             return "Archivo reenviado correctamente", 200
