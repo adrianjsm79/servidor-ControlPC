@@ -4,6 +4,7 @@ import os
 import socket
 import time
 from datetime import datetime, timedelta
+import requests
 
 app = Flask(__name__)
 
@@ -261,17 +262,34 @@ def obtener_comando_pendiente(nombre):
         return jsonify({"error": str(e)}), 500
 
 @app.route('/archivo/<nombre>', methods=['POST'])
-def recibir_archivo(nombre):
+def enviar_archivo_a_pc(nombre):
     archivo = request.files.get('archivo')
     if not archivo:
-        return jsonify({"error": "No se envió ningún archivo"}), 400
+        return "No se envió ningún archivo", 400
 
-    carpeta_destino = os.path.join(UPLOAD_FOLDER, nombre)
-    os.makedirs(carpeta_destino, exist_ok=True)
-    ruta = os.path.join(carpeta_destino, archivo.filename)
-    archivo.save(ruta)
+    try:
+        # Buscar la IP del nombre de PC en la base de datos
+        cursor.execute("SELECT ip FROM pcs WHERE nombre = %s;", (nombre,))
+        resultado = cursor.fetchone()
 
-    return jsonify({"estado": "archivo recibido", "ruta": ruta}), 200
+        if not resultado:
+            return "PC no registrada", 404
+
+        ip_destino = resultado[0]
+        url = f"http://{ip_destino}:5000/recibir_archivo"
+
+        # Preparar el archivo para reenviarlo a la PC destino
+        archivos = {'archivo': (archivo.filename, archivo.stream, archivo.mimetype)}
+        respuesta = requests.post(url, files=archivos)
+
+        if respuesta.status_code == 200:
+            return "Archivo reenviado correctamente", 200
+        else:
+            return f"Error al reenviar archivo: {respuesta.text}", 500
+
+    except Exception as e:
+        return f"Error del servidor intermedio: {e}", 500
+
 
 if __name__ == '__main__':
     app.run(debug=True)
