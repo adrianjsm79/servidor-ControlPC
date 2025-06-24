@@ -331,17 +331,23 @@ def subir_url_archivo(nombre_pc):
     url = data.get("url")
     if not url:
         return jsonify({"error": "Falta la URL"}), 400
+
     try:
-        cursor.execute(
-            "INSERT INTO archivos_pendientes (nombre, url) VALUES (%s, %s);",
-            (nombre_pc, url)
-        )
+        cursor.execute("""
+            INSERT INTO archivos_pendientes (nombre, url)
+            VALUES (%s, %s)
+        """, (nombre_pc, url))
+        cursor.execute("""
+            INSERT INTO comandos (nombre, accion)
+            VALUES (%s, %s)
+            ON CONFLICT (nombre) DO UPDATE SET accion = EXCLUDED.accion;
+        """, (nombre_pc, f"descargar_url::{url}"))
         conn.commit()
-        print(f"URL de archivo recibida para {nombre_pc}: {url}")
-        return jsonify({"mensaje": "Archivo registrado para descarga"})
+        return jsonify({"mensaje": "URL registrada correctamente"}), 200
     except Exception as e:
         conn.rollback()
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": f"No se pudo registrar la URL: {e}"}), 500
+
 
 @app.route('/archivo/<nombre_pc>', methods=['GET'])
 def obtener_url_archivo(nombre_pc):
