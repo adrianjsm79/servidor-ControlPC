@@ -361,20 +361,25 @@ def complete_upload():
     final_path = os.path.join(UPLOAD_FOLDER, filename)
 
     try:
-        # Ensamblamos el archivo
+        # Ensamblar el archivo leyendo cada chunk por partes pequeñas
         with open(final_path, 'wb') as f_out:
             chunks = sorted(
                 os.listdir(chunk_folder),
                 key=lambda x: int(x.split('_')[1].split('.')[0])
             )
             for chunk_file in chunks:
-                with open(os.path.join(chunk_folder, chunk_file), 'rb') as f_in:
-                    f_out.write(f_in.read())
+                chunk_path = os.path.join(chunk_folder, chunk_file)
+                with open(chunk_path, 'rb') as f_in:
+                    while True:
+                        buf = f_in.read(1024 * 1024)  # Lee 1MB por vez
+                        if not buf:
+                            break
+                        f_out.write(buf)
 
-        # Limpiamos los chunks
+        # Limpiar los chunks temporales
         shutil.rmtree(chunk_folder)
 
-        # Enviamos el comando para que la PC lo descargue
+        # Enviar el comando para que la PC lo descargue
         cursor.execute("""
             INSERT INTO comandos (nombre, accion)
             VALUES (%s, %s)
