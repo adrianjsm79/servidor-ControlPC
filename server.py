@@ -6,16 +6,14 @@ import socket
 import time
 from datetime import datetime, timedelta
 import requests
-from flask_cors import CORS
-from werkzeug.exceptions import RequestEntityTooLarge
-from uuid import uuid4
+import shutil
+import threading
+
 
 UPLOAD_FOLDER = "archivos_temporales"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 2 * 1024 * 1024 * 1024  # 2 GB
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-CORS(app)
 
 # === Conexión a la base de datos ===
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -40,15 +38,6 @@ CREATE TABLE IF NOT EXISTS pcs (
 CREATE TABLE IF NOT EXISTS comandos (
     nombre TEXT PRIMARY KEY,
     accion TEXT
-);
-""")
-conn.commit()
-
-# === Crear tabla para archivos pendientes si no existe ===
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS archivos_pendientes (
-    nombre TEXT,
-    url TEXT
 );
 """)
 conn.commit()
@@ -283,17 +272,8 @@ def subir_archivo(nombre):
 
     try:
         filename = secure_filename(archivo.filename)
-        unique_id = uuid4().hex[:8]
-        filename = f"{unique_id}_{filename}"
         ruta = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        
-        # Guardar el archivo en chunks
-        with open(ruta, 'wb') as f:
-            while True:
-                chunk = archivo.stream.read(8192)
-                if not chunk:
-                    break
-                f.write(chunk)
+        archivo.save(ruta)
 
         cursor.execute("""
             INSERT INTO comandos (nombre, accion) VALUES (%s, %s)
@@ -303,108 +283,111 @@ def subir_archivo(nombre):
 
         return jsonify({"mensaje": "Archivo subido correctamente"}), 200
     except Exception as e:
-        conn.rollback()
+        conn.rollback()  # <-- Agrega rollback aquí
         return f"Error al guardar archivo: {e}", 500
 
 @app.route('/descargas/<filename>', methods=['GET'])
 def descargar_archivo(filename):
-    ruta = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-    if not os.path.exists(ruta):
-        return f"Archivo '{filename}' no encontrado", 404
     try:
-        def eliminar_despues(response):
-            try:
-                os.remove(ruta)
-            except Exception:
-                pass
-            return response
+        ruta = os.path.join(app.config['UPLOAD_FOLDER'], filename)
 
-        response = send_file(ruta, as_attachment=True)
-        response.call_on_close(lambda: eliminar_despues(response))
-        return response
-    except Exception as e:
-        return f"Error al servir archivo: {e}", 500
+        # Verificamos que el archivo existe
+        if not os.path.exists(ruta):
+            return f"Archivo '{filename}' no encontrado", 404
 
-@app.route('/archivo/<nombre_pc>', methods=['POST'])
-def subir_url_archivo(nombre_pc):
-    data = request.get_json()
-    url = data.get("url")
-    if not url:
-        return jsonify({"error": "Falta la URL"}), 400
+        # Leemos el archivo completo en memoria para poder borrarlo luego
+        with open(ruta, 'rb') as f:
+            contenido = f.read()
 
-    try:
-        cursor.execute("""
-            INSERT INTO archivos_pendientes (nombre, url)
-            VALUES (%s, %s)
-        """, (nombre_pc, url))
-        cursor.execute("""
-            INSERT INTO comandos (nombre, accion)
-            VALUES (%s, %s)
-            ON CONFLICT (nombre) DO UPDATE SET accion = EXCLUDED.accion;
-        """, (nombre_pc, f"descargar_url::{url}"))
-        conn.commit()
-        return jsonify({"mensaje": "URL registrada correctamente"}), 200
-    except Exception as e:
-        conn.rollback()
-        return jsonify({"error": f"No se pudo registrar la URL: {e}"}), 500
+        # Eliminamos el archivo después de leerlo
+        os.remove(ruta)
 
-
-@app.route('/archivo/<nombre_pc>', methods=['GET'])
-def obtener_url_archivo(nombre_pc):
-    try:
-        cursor.execute(
-            "SELECT url FROM archivos_pendientes WHERE nombre = %s ORDER BY rowid ASC LIMIT 1;",
-            (nombre_pc,)
+        # Devolvemos el archivo leído manualmente with los headers correctos
+        from flask import Response
+        return Response(
+            contenido,
+            headers={
+                'Content-Disposition': f'attachment; filename={filename}',
+                'Content-Type': 'application/octet-stream'
+            }
         )
-        resultado = cursor.fetchone()
-        if resultado:
-            url = resultado[0]
-            cursor.execute(
-                "DELETE FROM archivos_pendientes WHERE nombre = %s AND url = %s;",
-                (nombre_pc, url)
-            )
-            conn.commit()
-            print(f"Entregando archivo pendiente a {nombre_pc}: {url}")
-            return jsonify({"url": url})
-        else:
-            return jsonify({"url": None})
+
     except Exception as e:
-        conn.rollback()
-        return jsonify({"error": str(e)}), 500
+        return f"Error al servir y eliminar archivo: {e}", 500
 
-@app.route('/limpiar/<nombre_pc>', methods=['POST'])
-def limpiar_datos(nombre_pc):
-    try:
-        cursor.execute("DELETE FROM comandos WHERE nombre = %s;", (nombre_pc,))
-        cursor.execute("DELETE FROM archivos_pendientes WHERE nombre = %s;", (nombre_pc,))
-        conn.commit()
-        print(f"Datos limpiados para {nombre_pc}")
-        return jsonify({"mensaje": f"Comandos y archivos limpiados para {nombre_pc}"})
-    except Exception as e:
-        conn.rollback()
-        return jsonify({"error": str(e)}), 500
+CHUNK_UPLOAD_FOLDER = os.path.join(UPLOAD_FOLDER, 'temp')
+os.makedirs(CHUNK_UPLOAD_FOLDER, exist_ok=True)
 
-@app.errorhandler(RequestEntityTooLarge)
-def handle_large_file(error):
-    return "Archivo demasiado grande", 413
-
-@app.route('/archivo_chunk/<nombre>', methods=['POST'])
-def recibir_chunk(nombre):
+@app.route('/upload_chunk', methods=['POST'])
+def upload_chunk():
     chunk = request.files.get('chunk')
-    index = request.form.get('index')
-    total = request.form.get('total')
+    chunk_index = request.form.get('chunkIndex')
     filename = request.form.get('filename')
 
-    ruta = os.path.join(app.config['UPLOAD_FOLDER'], f"{nombre}_{filename}")
-    with open(ruta, 'ab') as f:
-        f.write(chunk.read())
+    if not chunk or chunk_index is None or not filename:
+        return "Faltan datos", 400
 
-    if int(index) + 1 == int(total):
-        print(f"Archivo {filename} de {nombre} recibido completo.")
+    chunk_folder = os.path.join(CHUNK_UPLOAD_FOLDER, filename)
+    os.makedirs(chunk_folder, exist_ok=True)
+
+    chunk_path = os.path.join(chunk_folder, f'chunk_{chunk_index}.part')
+    chunk.save(chunk_path)
+    return "OK", 200
+
+@app.route('/complete_upload', methods=['POST'])
+def complete_upload():
+    filename = request.form.get('filename')
+    nombre = request.form.get('nombre')  # nombre de la PC destino
+
+    if not filename or not nombre:
+        return "Faltan datos", 400
+
+    chunk_folder = os.path.join(CHUNK_UPLOAD_FOLDER, filename)
+    final_path = os.path.join(UPLOAD_FOLDER, filename)
+
+    try:
+        with open(final_path, 'wb') as f_out:
+            chunks = sorted(os.listdir(chunk_folder), key=lambda x: int(x.split('_')[1].split('.')[0]))
+            for chunk_file in chunks:
+                with open(os.path.join(chunk_folder, chunk_file), 'rb') as f_in:
+                    f_out.write(f_in.read())
+
+        shutil.rmtree(chunk_folder)
+
+        # Registrar el comando para que la PC destino descargue el archivo
         cursor.execute("""
             INSERT INTO comandos (nombre, accion) VALUES (%s, %s)
             ON CONFLICT (nombre) DO UPDATE SET accion = EXCLUDED.accion;
-        """, (nombre, f"descargar::{nombre}_{filename}"))
+        """, (nombre, f"descargar::{filename}"))
         conn.commit()
 
-    return jsonify({"estado": "chunk recibido"}), 200
+        return "Upload complete", 200
+    except Exception as e:
+        conn.rollback()
+        return f"Error al ensamblar archivo: {e}", 500
+
+def limpiar_archivos_antiguos():
+    while True:
+        ahora = time.time()
+        # Limpia archivos ensamblados no descargados (más de 15 minutos)
+        for archivo in os.listdir(UPLOAD_FOLDER):
+            ruta = os.path.join(UPLOAD_FOLDER, archivo)
+            if os.path.isfile(ruta):
+                if ahora - os.path.getmtime(ruta) > 900:  # 15 minutos = 900 segundos
+                    try:
+                        os.remove(ruta)
+                    except Exception:
+                        pass
+        # Limpia carpetas de chunks no ensambladas (más de 15 minutos)
+        for carpeta in os.listdir(CHUNK_UPLOAD_FOLDER):
+            ruta_carpeta = os.path.join(CHUNK_UPLOAD_FOLDER, carpeta)
+            if os.path.isdir(ruta_carpeta):
+                if ahora - os.path.getmtime(ruta_carpeta) > 900:
+                    try:
+                        shutil.rmtree(ruta_carpeta)
+                    except Exception:
+                        pass
+        time.sleep(600)  # Ejecuta cada 10 minutos
+
+# Inicia el hilo de limpieza en segundo plano
+threading.Thread(target=limpiar_archivos_antiguos, daemon=True).start()
