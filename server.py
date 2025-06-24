@@ -8,26 +8,34 @@ from datetime import datetime, timedelta
 import requests
 import shutil
 import threading
+#Flask es el framework principal del servidor, 
+#request y jsonify para manejar datos entrantes y datos formato json
+#sendfromdirectory para descargas
+#sqlalchemy para mapear las clases, tablas y la base de datos en general
+#threading para manejar tareas por hilos
+#etc etc etc
 
-
+#esta es lacarpeta donde se guardaran los archivos temporales
+#de los archivos subidos
 UPLOAD_FOLDER = "archivos_temporales"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
-# === Conexión a la base de datos ===
+#Conexión a la base de datos postgresql en render
 DATABASE_URL = os.getenv("DATABASE_URL")
 conn = psycopg2.connect(DATABASE_URL, sslmode='require')
 cursor = conn.cursor()
 
-# === Intentar agregar columna si no existe ===
+#Intentar agregar columna de ultima actividad si no existe
 try:
     cursor.execute("ALTER TABLE pcs ADD COLUMN ultima_actividad TIMESTAMP DEFAULT NOW();")
     conn.commit()
 except psycopg2.errors.DuplicateColumn:
     conn.rollback()
 
-# === Crear tablas si no existen ===
+#Crear tablas si no existen
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS pcs (
     nombre TEXT PRIMARY KEY,
@@ -42,6 +50,7 @@ CREATE TABLE IF NOT EXISTS comandos (
 """)
 conn.commit()
 
+#HTML para la interfaz del control del servidor 
 HTML_TEMPLATE = """
 <!doctype html>
 <html lang=\"es\">
@@ -136,7 +145,7 @@ HTML_TEMPLATE = """
 </html>
 """
 
-@app.route('/')
+@app.route('/') #esta es la ruta principal, muestra pcs y estado
 def inicio():
     try:
         cursor.execute("SELECT nombre, ip, ultima_actividad FROM pcs;")
@@ -144,7 +153,7 @@ def inicio():
         ahora = datetime.utcnow()
         estados = {}
         resultado = [(nombre, ip) for nombre, ip, _ in pcs]
-
+        #se calcula si una pc está conectada por la ultima actividad
         for nombre, ip, ultima in pcs:
             if ultima and ahora - ultima < timedelta(seconds=15):
                 estados[nombre] = "conectado"
@@ -157,6 +166,7 @@ def inicio():
         conn.rollback()
         return f"<h1>Error en el servidor</h1><p>{e}</p>", 500
 
+#endpoint pa actualizar la actividad de la pc (que es llamado por la pc cada x tiempo)
 @app.route('/actualizar_actividad/<nombre>', methods=['POST'])
 def actualizar_actividad(nombre):
     try:
@@ -169,6 +179,7 @@ def actualizar_actividad(nombre):
         conn.rollback()
         return jsonify({"error": str(e)}), 500
 
+#elimina pc (ocupa contraseña) desde el html del server
 @app.route('/eliminar/<nombre>', methods=['POST'])
 def eliminar_pc(nombre):
     clave = request.form.get("clave")
@@ -190,6 +201,7 @@ def eliminar_pc(nombre):
     else:
         return "Contraseña incorrecta."
 
+#endpoint que registra las pc
 @app.route('/registrar', methods=['POST'])
 def registrar_pc():
     try:
@@ -323,42 +335,51 @@ def upload_chunk():
     chunk = request.files.get('chunk')
     chunk_index = request.form.get('chunkIndex')
     filename = request.form.get('filename')
+    destino = request.form.get('destino')  # <- nombre de la PC destino
 
-    if not chunk or chunk_index is None or not filename:
+    if not chunk or chunk_index is None or not filename or not destino:
         return "Faltan datos", 400
 
-    chunk_folder = os.path.join(CHUNK_UPLOAD_FOLDER, filename)
+    # Guardamos los chunks por destino/archivo, para evitar conflictos
+    chunk_folder = os.path.join(CHUNK_UPLOAD_FOLDER, destino, filename)
     os.makedirs(chunk_folder, exist_ok=True)
 
     chunk_path = os.path.join(chunk_folder, f'chunk_{chunk_index}.part')
     chunk.save(chunk_path)
     return "OK", 200
 
+
 @app.route('/complete_upload', methods=['POST'])
 def complete_upload():
     filename = request.form.get('filename')
-    nombre = request.form.get('nombre')  # nombre de la PC destino
+    destino = request.form.get('destino')  # nombre de la PC destino
 
-    if not filename or not nombre:
+    if not filename or not destino:
         return "Faltan datos", 400
 
-    chunk_folder = os.path.join(CHUNK_UPLOAD_FOLDER, filename)
+    chunk_folder = os.path.join(CHUNK_UPLOAD_FOLDER, destino, filename)
     final_path = os.path.join(UPLOAD_FOLDER, filename)
 
     try:
+        # Ensamblamos el archivo
         with open(final_path, 'wb') as f_out:
-            chunks = sorted(os.listdir(chunk_folder), key=lambda x: int(x.split('_')[1].split('.')[0]))
+            chunks = sorted(
+                os.listdir(chunk_folder),
+                key=lambda x: int(x.split('_')[1].split('.')[0])
+            )
             for chunk_file in chunks:
                 with open(os.path.join(chunk_folder, chunk_file), 'rb') as f_in:
                     f_out.write(f_in.read())
 
+        # Limpiamos los chunks
         shutil.rmtree(chunk_folder)
 
-        # Registrar el comando para que la PC destino descargue el archivo
+        # Enviamos el comando para que la PC lo descargue
         cursor.execute("""
-            INSERT INTO comandos (nombre, accion) VALUES (%s, %s)
+            INSERT INTO comandos (nombre, accion)
+            VALUES (%s, %s)
             ON CONFLICT (nombre) DO UPDATE SET accion = EXCLUDED.accion;
-        """, (nombre, f"descargar::{filename}"))
+        """, (destino, f"descargar::{filename}"))
         conn.commit()
 
         return "Upload complete", 200
@@ -366,28 +387,34 @@ def complete_upload():
         conn.rollback()
         return f"Error al ensamblar archivo: {e}", 500
 
+
 def limpiar_archivos_antiguos():
     while True:
         ahora = time.time()
-        # Limpia archivos ensamblados no descargados (más de 15 minutos)
+
+        # Limpiar archivos ensamblados antiguos
         for archivo in os.listdir(UPLOAD_FOLDER):
             ruta = os.path.join(UPLOAD_FOLDER, archivo)
-            if os.path.isfile(ruta):
-                if ahora - os.path.getmtime(ruta) > 900:  # 15 minutos = 900 segundos
-                    try:
-                        os.remove(ruta)
-                    except Exception:
-                        pass
-        # Limpia carpetas de chunks no ensambladas (más de 15 minutos)
-        for carpeta in os.listdir(CHUNK_UPLOAD_FOLDER):
-            ruta_carpeta = os.path.join(CHUNK_UPLOAD_FOLDER, carpeta)
-            if os.path.isdir(ruta_carpeta):
-                if ahora - os.path.getmtime(ruta_carpeta) > 900:
-                    try:
-                        shutil.rmtree(ruta_carpeta)
-                    except Exception:
-                        pass
-        time.sleep(600)  # Ejecuta cada 10 minutos
+            if os.path.isfile(ruta) and ahora - os.path.getmtime(ruta) > 900:
+                try:
+                    os.remove(ruta)
+                except Exception:
+                    pass
+
+        # Limpiar carpetas de chunks por destino
+        for destino in os.listdir(CHUNK_UPLOAD_FOLDER):
+            ruta_destino = os.path.join(CHUNK_UPLOAD_FOLDER, destino)
+            if os.path.isdir(ruta_destino):
+                for carpeta_archivo in os.listdir(ruta_destino):
+                    ruta_carpeta = os.path.join(ruta_destino, carpeta_archivo)
+                    if os.path.isdir(ruta_carpeta) and ahora - os.path.getmtime(ruta_carpeta) > 900:
+                        try:
+                            shutil.rmtree(ruta_carpeta)
+                        except Exception:
+                            pass
+
+        time.sleep(600)
+
 
 # Inicia el hilo de limpieza en segundo plano
 threading.Thread(target=limpiar_archivos_antiguos, daemon=True).start()
