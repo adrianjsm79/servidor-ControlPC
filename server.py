@@ -10,10 +10,6 @@ from flask_cors import CORS
 from werkzeug.exceptions import RequestEntityTooLarge
 from uuid import uuid4
 
-filename = secure_filename(archivo.filename)
-unique_id = uuid4().hex[:8]
-filename = f"{unique_id}_{filename}"
-
 UPLOAD_FOLDER = "archivos_temporales"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app = Flask(__name__)
@@ -287,6 +283,8 @@ def subir_archivo(nombre):
 
     try:
         filename = secure_filename(archivo.filename)
+        unique_id = uuid4().hex[:8]
+        filename = f"{unique_id}_{filename}"
         ruta = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         
         # Guardar el archivo en chunks
