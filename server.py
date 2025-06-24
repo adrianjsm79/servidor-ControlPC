@@ -6,11 +6,20 @@ import socket
 import time
 from datetime import datetime, timedelta
 import requests
+from flask_cors import CORS
+from werkzeug.exceptions import RequestEntityTooLarge
+from uuid import uuid4
+
+filename = secure_filename(archivo.filename)
+unique_id = uuid4().hex[:8]
+filename = f"{unique_id}_{filename}"
 
 UPLOAD_FOLDER = "archivos_temporales"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app = Flask(__name__)
+app.config['MAX_CONTENT_LENGTH'] = 2 * 1024 * 1024 * 1024  # 2 GB
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+CORS(app)
 
 # === Conexión a la base de datos ===
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -35,6 +44,15 @@ CREATE TABLE IF NOT EXISTS pcs (
 CREATE TABLE IF NOT EXISTS comandos (
     nombre TEXT PRIMARY KEY,
     accion TEXT
+);
+""")
+conn.commit()
+
+# === Crear tabla para archivos pendientes si no existe ===
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS archivos_pendientes (
+    nombre TEXT,
+    url TEXT
 );
 """)
 conn.commit()
@@ -270,7 +288,14 @@ def subir_archivo(nombre):
     try:
         filename = secure_filename(archivo.filename)
         ruta = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        archivo.save(ruta)
+        
+        # Guardar el archivo en chunks
+        with open(ruta, 'wb') as f:
+            while True:
+                chunk = archivo.stream.read(8192)
+                if not chunk:
+                    break
+                f.write(chunk)
 
         cursor.execute("""
             INSERT INTO comandos (nombre, accion) VALUES (%s, %s)
@@ -280,34 +305,102 @@ def subir_archivo(nombre):
 
         return jsonify({"mensaje": "Archivo subido correctamente"}), 200
     except Exception as e:
-        conn.rollback()  # <-- Agrega rollback aquí
+        conn.rollback()
         return f"Error al guardar archivo: {e}", 500
 
 @app.route('/descargas/<filename>', methods=['GET'])
 def descargar_archivo(filename):
+    ruta = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    if not os.path.exists(ruta):
+        return f"Archivo '{filename}' no encontrado", 404
     try:
-        ruta = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+        def eliminar_despues(response):
+            try:
+                os.remove(ruta)
+            except Exception:
+                pass
+            return response
 
-        # Verificamos que el archivo existe
-        if not os.path.exists(ruta):
-            return f"Archivo '{filename}' no encontrado", 404
-
-        # Leemos el archivo completo en memoria para poder borrarlo luego
-        with open(ruta, 'rb') as f:
-            contenido = f.read()
-
-        # Eliminamos el archivo después de leerlo
-        os.remove(ruta)
-
-        # Devolvemos el archivo leído manualmente con los headers correctos
-        from flask import Response
-        return Response(
-            contenido,
-            headers={
-                'Content-Disposition': f'attachment; filename={filename}',
-                'Content-Type': 'application/octet-stream'
-            }
-        )
-
+        response = send_file(ruta, as_attachment=True)
+        response.call_on_close(lambda: eliminar_despues(response))
+        return response
     except Exception as e:
-        return f"Error al servir y eliminar archivo: {e}", 500
+        return f"Error al servir archivo: {e}", 500
+
+@app.route('/archivo/<nombre_pc>', methods=['POST'])
+def subir_url_archivo(nombre_pc):
+    data = request.get_json()
+    url = data.get("url")
+    if not url:
+        return jsonify({"error": "Falta la URL"}), 400
+    try:
+        cursor.execute(
+            "INSERT INTO archivos_pendientes (nombre, url) VALUES (%s, %s);",
+            (nombre_pc, url)
+        )
+        conn.commit()
+        print(f"URL de archivo recibida para {nombre_pc}: {url}")
+        return jsonify({"mensaje": "Archivo registrado para descarga"})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/archivo/<nombre_pc>', methods=['GET'])
+def obtener_url_archivo(nombre_pc):
+    try:
+        cursor.execute(
+            "SELECT url FROM archivos_pendientes WHERE nombre = %s ORDER BY rowid ASC LIMIT 1;",
+            (nombre_pc,)
+        )
+        resultado = cursor.fetchone()
+        if resultado:
+            url = resultado[0]
+            cursor.execute(
+                "DELETE FROM archivos_pendientes WHERE nombre = %s AND url = %s;",
+                (nombre_pc, url)
+            )
+            conn.commit()
+            print(f"Entregando archivo pendiente a {nombre_pc}: {url}")
+            return jsonify({"url": url})
+        else:
+            return jsonify({"url": None})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/limpiar/<nombre_pc>', methods=['POST'])
+def limpiar_datos(nombre_pc):
+    try:
+        cursor.execute("DELETE FROM comandos WHERE nombre = %s;", (nombre_pc,))
+        cursor.execute("DELETE FROM archivos_pendientes WHERE nombre = %s;", (nombre_pc,))
+        conn.commit()
+        print(f"Datos limpiados para {nombre_pc}")
+        return jsonify({"mensaje": f"Comandos y archivos limpiados para {nombre_pc}"})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+
+@app.errorhandler(RequestEntityTooLarge)
+def handle_large_file(error):
+    return "Archivo demasiado grande", 413
+
+@app.route('/archivo_chunk/<nombre>', methods=['POST'])
+def recibir_chunk(nombre):
+    chunk = request.files.get('chunk')
+    index = request.form.get('index')
+    total = request.form.get('total')
+    filename = request.form.get('filename')
+
+    ruta = os.path.join(app.config['UPLOAD_FOLDER'], f"{nombre}_{filename}")
+    with open(ruta, 'ab') as f:
+        f.write(chunk.read())
+
+    if int(index) + 1 == int(total):
+        print(f"Archivo {filename} de {nombre} recibido completo.")
+        cursor.execute("""
+            INSERT INTO comandos (nombre, accion) VALUES (%s, %s)
+            ON CONFLICT (nombre) DO UPDATE SET accion = EXCLUDED.accion;
+        """, (nombre, f"descargar::{nombre}_{filename}"))
+        conn.commit()
+
+    return jsonify({"estado": "chunk recibido"}), 200
