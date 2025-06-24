@@ -400,7 +400,7 @@ def limpiar_archivos_antiguos():
         # Limpiar archivos ensamblados antiguos
         for archivo in os.listdir(UPLOAD_FOLDER):
             ruta = os.path.join(UPLOAD_FOLDER, archivo)
-            if os.path.isfile(ruta) and ahora - os.path.getmtime(ruta) > 900:
+            if os.path.isfile(ruta) and ahora - os.path.getmtime(ruta) > 180:
                 try:
                     os.remove(ruta)
                 except Exception:
@@ -412,7 +412,7 @@ def limpiar_archivos_antiguos():
             if os.path.isdir(ruta_destino):
                 for carpeta_archivo in os.listdir(ruta_destino):
                     ruta_carpeta = os.path.join(ruta_destino, carpeta_archivo)
-                    if os.path.isdir(ruta_carpeta) and ahora - os.path.getmtime(ruta_carpeta) > 900:
+                    if os.path.isdir(ruta_carpeta) and ahora - os.path.getmtime(ruta_carpeta) > 180:
                         try:
                             shutil.rmtree(ruta_carpeta)
                         except Exception:
